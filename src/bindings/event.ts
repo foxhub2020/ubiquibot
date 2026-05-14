@@ -33,6 +33,12 @@ type WildCardHandlerWithType = { type: string; actions: WildCardHandler[] };
 type PostHandlerWithType = { type: string; actions: PostActionHandler[] };
 type AllHandlersWithTypes = PreHandlerWithType | HandlerWithType | PostHandlerWithType;
 type AllHandlers = PreActionHandler | MainActionHandler | PostActionHandler;
+type RepositoryDispatchPayload = GitHubPayload & {
+  client_payload?: {
+    result?: string;
+    issueNumber?: string;
+  };
+};
 
 const validatePayload = ajv.compile(payloadSchema);
 
@@ -95,16 +101,16 @@ export async function bindEvents(eventContext: ProbotContext) {
   }
 
   if (eventContext.name === GitHubEvent.REPOSITORY_DISPATCH) {
-    const dispatchPayload = payload as any;
+    const dispatchPayload = payload as RepositoryDispatchPayload;
     if (payload.action === "issueClosed") {
       //This is response for issueClosed request
-      const response = dispatchPayload.client_payload.result;
+      const response = dispatchPayload.client_payload?.result;
       if (response) {
         const uncompressedComment = zlib.gunzipSync(Buffer.from(response));
         await addCommentToIssue(
           context,
           uncompressedComment.toString(),
-          parseInt(dispatchPayload.client_payload.issueNumber)
+          parseInt(dispatchPayload.client_payload?.issueNumber ?? "")
         );
       }
     }
@@ -174,9 +180,14 @@ async function renderMainActionOutput(
   action: AllHandlers
 ) {
   const { payload, logger } = context;
-  const issueNumber = payload.issue?.number;
+  if (response === null || response === undefined) {
+    logger.debug("No comment response from action", { action: action.name });
+    return;
+  }
+
+  const issueNumber = payload.issue?.number ?? (payload as { pull_request?: { number?: number } }).pull_request?.number;
   if (!issueNumber) {
-    throw new Error("No issue number found");
+    throw new Error("No issue or pull request number found");
   }
 
   if (response instanceof LogReturn) {
@@ -193,8 +204,6 @@ async function renderMainActionOutput(
     await addCommentToIssue(context, serializedComment, issueNumber);
   } else if (typeof response == "string") {
     await addCommentToIssue(context, response, issueNumber);
-  } else if (response === null) {
-    logger.debug("null response", { action: action.name });
   } else {
     logger.error(
       "No response from action. Ensure return of string, null, or LogReturn object",
